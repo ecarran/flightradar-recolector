@@ -5,7 +5,7 @@ import gspread
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from oauth2client.service_account import ServiceAccountCredentials
-from FlightRadar24.api import FlightRadar24API
+from FlightRadar24 import FlightRadar24API
 from datetime import datetime, timedelta
 
 # ==================================
@@ -137,3 +137,4 @@ def recolectar():
     except Exception as e:
 
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
