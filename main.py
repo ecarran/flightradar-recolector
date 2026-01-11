@@ -42,6 +42,10 @@ def conectar_y_preparar_hoja():
 def home():
     return {"status": "online", "msg": "Recolector Barajas Potente - Operativo"}
 
+@app.get("/ping")
+def ping():
+    return {"status": "alive"}
+    
 @app.get("/recolectar")
 def recolectar():
     sheet = conectar_y_preparar_hoja()
@@ -121,6 +125,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
