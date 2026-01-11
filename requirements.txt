@@ -2,10 +2,10 @@ fastapi
 uvicorn
 gspread
 oauth2client
-flightradar24
 pytz
 requests
 pandas
+
 
 
 
