@@ -5,6 +5,9 @@ oauth2client
 pytz
 requests
 pandas
+beautifulsoup4
+lxml
+
 
 
 
