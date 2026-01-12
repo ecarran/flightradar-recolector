@@ -8,7 +8,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- IMPORTACIÓN DE LA LIBRERÍA LOCAL ---
-# Al tener la carpeta en tu GitHub, Render la encontrará directamente
 from FlightRadar24 import FlightRadar24API
 
 # --- CONFIGURACIÓN ---
@@ -16,13 +15,6 @@ IATA_CODE = "MAD"
 ZONA_HORARIA = pytz.timezone("Europe/Madrid")
 GOOGLE_JSON = "service_account.json" 
 SPREADSHEET_NAME = "Barajas_Master_Data"
-
-# Estructura de 14 columnas para tu Power BI
-ENCABEZADOS = [
-    "Fecha_Carga", "Vuelo", "Tipo", "IATA", "Ciudad", "Pais", 
-    "Aerolinea", "Terminal", "Hora_Real", "Modelo_Avion", 
-    "Matricula", "Diferencia", "Categoria", "TS_Firma"
-]
 
 app = FastAPI()
 fr_api = FlightRadar24API()
@@ -40,11 +32,11 @@ def conectar_y_preparar_hoja():
 
 @app.get("/")
 def home():
-    return {"status": "online", "msg": "Recolector Barajas Potente - Operativo"}
+    return {"status": "online", "msg": "Recolector Barajas Optimizado - Operativo"}
 
 @app.get("/ping")
 def ping():
-    return {"status": "alive"}
+    return {"status": "alive", "timestamp": datetime.now(ZONA_HORARIA).isoformat()}
     
 @app.get("/recolectar")
 def recolectar():
@@ -57,7 +49,6 @@ def recolectar():
     firmas_existentes = {f"{r[1]}_{r[13]}" for r in data_actual[1:] if len(r) > 13}
     
     try:
-        # Recuperamos la lógica de búsqueda por coordenadas y radio
         aeropuerto = fr_api.get_airport(code = IATA_CODE)
         bounds = fr_api.get_bounds_by_point(aeropuerto.latitude, aeropuerto.longitude, 50000)
         vuelos_radar = fr_api.get_flights(bounds = bounds)
@@ -67,23 +58,33 @@ def recolectar():
         ahora_ts = ahora.timestamp()
 
         for v in vuelos_radar:
-            # Filtro de altitud para capturar aterrizajes/despegues
-            if v.altitude > 6000 and v.ground_speed > 250:
+            # 1. FILTRO ORIGINAL (Actualizado a 5000 pies para mayor seguridad)
+            if v.altitude > 5000 and v.ground_speed > 250:
                 continue 
 
+            # 2. FILTRADO PREVENTIVO: Solo procesamos si el radar ya confirma MAD
+            # Esto evita llamadas HTTP pesadas para vuelos que no nos interesan
+            es_mad_origen = v.origin_airport_iata == IATA_CODE
+            es_mad_destino = v.destination_airport_iata == IATA_CODE
+
+            if not (es_mad_origen or es_mad_destino):
+                continue
+
             try:
-                # FUNCIÓN CLAVE: Ahora sí podemos obtener detalles
+                # 3. LLAMADA PESADA: Solo para vuelos confirmados de Barajas
                 d = fr_api.get_flight_details(v)
                 
                 es_salida = d['airport']['origin']['code']['iata'] == IATA_CODE
                 es_llegada = d['airport']['destination']['code']['iata'] == IATA_CODE
+                
+                # Doble check de seguridad por si el radar dio info incompleta
                 if not (es_salida or es_llegada): continue
                 
                 apt_key = 'destination' if es_salida else 'origin'
                 ts_key = 'departure' if es_salida else 'arrival'
                 ts_real = d['time']['real'].get(ts_key)
                 
-                # Ventana de 90 min
+                # Ventana de 90 min para asegurar captura de registros recientes
                 if ts_real and (ahora_ts - ts_real) < 5400:
                     vuelo_id = d['identification']['number']['default'] or d['aircraft']['registration']
                     categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
@@ -91,13 +92,12 @@ def recolectar():
                     firma = f"{vuelo_id}_{ts_real}"
                     
                     if firma not in firmas_existentes:
-                        # --- EXTRACCIÓN DE DATOS ENRIQUECIDOS ---
                         ciudad = d['airport'][apt_key]['position']['region']['city']
                         pais = d['airport'][apt_key]['position']['country']['name']
                         aerolinea = d['airline']['name'] if d['airline'] else "Privado"
                         terminal = d['airport']['origin' if es_salida else 'destination']['info']['terminal'] or "N/A"
                         
-                        # Cálculo de retraso en minutos
+                        # Cálculo de retraso/adelanto
                         diff_minutos = int((ts_real - d['time']['scheduled'][ts_key]) / 60)
                         dt_real = datetime.fromtimestamp(ts_real, ZONA_HORARIA)
                         
@@ -113,10 +113,11 @@ def recolectar():
                             diff_minutos, categoria, ts_real
                         ])
                         firmas_existentes.add(firma)
-                        time.sleep(0.1) # Breve pausa para estabilidad
+                        time.sleep(0.05) # Pausa técnica para estabilidad
             except:
                 continue
 
+        # 4. ESCRITURA POR LOTES: Una única petición a la API de Google
         if nuevos_registros:
             sheet.append_rows(nuevos_registros)
             return {"status": "success", "añadidos": len(nuevos_registros)}
@@ -125,6 +126,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
