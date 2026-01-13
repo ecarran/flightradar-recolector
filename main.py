@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# --- IMPORTACIÓN DE LA LIBRERÍA LOCAL ---
+# --- IMPORTACIÓN DE LA LIBRERÍA LOCAL (MANTENIDA) ---
 from FlightRadar24 import FlightRadar24API
 
 # --- CONFIGURACIÓN ---
@@ -44,9 +44,14 @@ def recolectar():
     if not sheet:
         return JSONResponse({"error": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-    # Evitar duplicados usando la columna N (índice 13)
-    data_actual = sheet.get_all_values()
-    firmas_existentes = {f"{r[1]}_{r[13]}" for r in data_actual[1:] if len(r) > 13}
+    # --- MEJORA 1: CONSULTA LIMITADA PARA EVITAR DUPLICADOS Y ERROR 429 ---
+    # En lugar de leer toda la hoja, leemos solo las últimas 400 filas
+    # Esto reduce el tiempo de ejecución y el riesgo de bloqueo por cuota (429)
+    total_filas = sheet.row_count
+    inicio_lectura = max(1, total_filas - 400)
+    # Obtenemos los valores del rango final para generar el set de firmas
+    data_reciente = sheet.get_values(f"A{inicio_lectura}:N{total_filas}")
+    firmas_existentes = {f"{r[1]}_{r[13]}" for r in data_reciente if len(r) > 13}
     
     try:
         aeropuerto = fr_api.get_airport(code = IATA_CODE)
@@ -58,33 +63,35 @@ def recolectar():
         ahora_ts = ahora.timestamp()
 
         for v in vuelos_radar:
-            # 1. FILTRO ORIGINAL (Actualizado a 5000 pies para mayor seguridad)
-            if v.altitude > 5000 and v.ground_speed > 250:
-                continue 
-
-            # 2. FILTRADO PREVENTIVO: Solo procesamos si el radar ya confirma MAD
-            # Esto evita llamadas HTTP pesadas para vuelos que no nos interesan
+            # --- MEJORA 2: ALTITUD ASIMÉTRICA PARA NO PERDER SALIDAS ---
+            # Filtro preventivo basado en IATA para decidir el techo de altitud
             es_mad_origen = v.origin_airport_iata == IATA_CODE
             es_mad_destino = v.destination_airport_iata == IATA_CODE
 
             if not (es_mad_origen or es_mad_destino):
                 continue
 
+            # Si es LLEGADA a MAD, mantenemos el filtro estricto de 5000 pies
+            if es_mad_destino and v.altitude > 5000:
+                continue
+            
+            # Si es SALIDA de MAD, subimos a 10000 pies para cazar los despegues rápidos
+            if es_mad_origen and v.altitude > 10000:
+                continue
+
             try:
-                # 3. LLAMADA PESADA: Solo para vuelos confirmados de Barajas
+                # 3. LLAMADA PESADA: Solo para vuelos que pasaron el filtro asimétrico
                 d = fr_api.get_flight_details(v)
                 
                 es_salida = d['airport']['origin']['code']['iata'] == IATA_CODE
                 es_llegada = d['airport']['destination']['code']['iata'] == IATA_CODE
                 
-                # Doble check de seguridad por si el radar dio info incompleta
                 if not (es_salida or es_llegada): continue
                 
                 apt_key = 'destination' if es_salida else 'origin'
                 ts_key = 'departure' if es_salida else 'arrival'
                 ts_real = d['time']['real'].get(ts_key)
                 
-                # Ventana de 90 min para asegurar captura de registros recientes
                 if ts_real and (ahora_ts - ts_real) < 5400:
                     vuelo_id = d['identification']['number']['default'] or d['aircraft']['registration']
                     categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
@@ -97,7 +104,6 @@ def recolectar():
                         aerolinea = d['airline']['name'] if d['airline'] else "Privado"
                         terminal = d['airport']['origin' if es_salida else 'destination']['info']['terminal'] or "N/A"
                         
-                        # Cálculo de retraso/adelanto
                         diff_minutos = int((ts_real - d['time']['scheduled'][ts_key]) / 60)
                         dt_real = datetime.fromtimestamp(ts_real, ZONA_HORARIA)
                         
@@ -113,11 +119,10 @@ def recolectar():
                             diff_minutos, categoria, ts_real
                         ])
                         firmas_existentes.add(firma)
-                        time.sleep(0.05) # Pausa técnica para estabilidad
+                        time.sleep(0.05)
             except:
                 continue
 
-        # 4. ESCRITURA POR LOTES: Una única petición a la API de Google
         if nuevos_registros:
             sheet.append_rows(nuevos_registros)
             return {"status": "success", "añadidos": len(nuevos_registros)}
@@ -126,6 +131,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
