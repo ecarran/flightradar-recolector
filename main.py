@@ -44,17 +44,17 @@ def recolectar():
     if not sheet:
         return JSONResponse({"error": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-    # --- LECTURA OPTIMIZADA ---
-    total_filas = sheet.row_count
-    inicio_lectura = max(1, total_filas - 400)
-    data_reciente = sheet.get_values(f"A{inicio_lectura}:N{total_filas}")
+    # --- 1. CAPTURA DE FIRMAS EXISTENTES (REVISADO PARA EVITAR DUPLICADOS) ---
+    # Obtenemos todos los valores reales de la hoja para evitar el error de row_count
+    todos_los_datos = sheet.get_all_values()
+    # Tomamos los últimos 400 para comparar (suficiente para cubrir >24h de margen)
+    data_reciente = todos_los_datos[-400:] if len(todos_los_datos) > 400 else todos_los_datos
     
-    # CORRECCIÓN DE BUG: Normalización a string y limpieza de espacios
-    # Usamos str().strip() para que la comparación sea idéntica aunque Google Sheets cambie el formato
+    # Normalización estricta: String + Strip para que la comparación no falle por formato
     firmas_existentes = {
         f"{str(r[1]).strip()}_{str(r[13]).strip()}" 
         for r in data_reciente 
-        if len(r) > 13 and str(r[1]).strip() != "Vuelo"
+        if len(r) > 13
     }
     
     try:
@@ -67,7 +67,7 @@ def recolectar():
         ahora_ts = ahora.timestamp()
 
         for v in vuelos_radar:
-            # ALTITUD ASIMÉTRICA (Mantenida)
+            # --- 2. LÓGICA DE ALTITUD ASIMÉTRICA (MANTENIDA) ---
             es_mad_origen = v.origin_airport_iata == IATA_CODE
             es_mad_destino = v.destination_airport_iata == IATA_CODE
 
@@ -79,6 +79,7 @@ def recolectar():
                 continue
 
             try:
+                # 3. LLAMADA PESADA A DETALLES
                 d = fr_api.get_flight_details(v)
                 
                 es_salida = d['airport']['origin']['code']['iata'] == IATA_CODE
@@ -90,11 +91,12 @@ def recolectar():
                 ts_key = 'departure' if es_salida else 'arrival'
                 ts_real = d['time']['real'].get(ts_key)
                 
+                # Filtro de 90 minutos para no re-procesar vuelos antiguos
                 if ts_real and (ahora_ts - ts_real) < 5400:
                     vuelo_id = d['identification']['number']['default'] or d['aircraft']['registration']
                     categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
                     
-                    # CORRECCIÓN DE BUG: Generación de firma normalizada
+                    # Generación de firma idéntica a la búsqueda
                     firma = f"{str(vuelo_id).strip()}_{str(ts_real).strip()}"
                     
                     if firma not in firmas_existentes:
@@ -122,6 +124,7 @@ def recolectar():
             except:
                 continue
 
+        # 4. ESCRITURA FINAL
         if nuevos_registros:
             sheet.append_rows(nuevos_registros)
             return {"status": "success", "añadidos": len(nuevos_registros)}
@@ -130,6 +133,12 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
