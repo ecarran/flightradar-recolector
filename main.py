@@ -30,7 +30,7 @@ def conectar_y_preparar_hoja():
 
 @app.get("/")
 def home():
-    return {"status": "online", "msg": "Recolector Barajas V3 - Firma de Bloque Activa"}
+    return {"status": "online", "msg": "Recolector Barajas V4 - Lógica de Estado Activa"}
 
 @app.get("/recolectar")
 def recolectar():
@@ -38,16 +38,13 @@ def recolectar():
     if not sheet:
         return JSONResponse({"error": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-    # --- 1. CAPTURA DE FIRMAS EXISTENTES (ESTABILIZADA) ---
+    # 1. CAPTURA DE FIRMAS DE BLOQUE (Vuelo_Fecha_Tipo)
     todos_los_datos = sheet.get_all_values()
-    # Miramos los últimos 600 para cubrir horas punta de gran tráfico
     data_reciente = todos_los_datos[-600:] if len(todos_los_datos) > 600 else todos_los_datos
     
     firmas_existentes = set()
     for r in data_reciente:
         if len(r) > 13:
-            # Creamos firma estable: Vuelo + Fecha (sin hora) + Tipo
-            # La fecha está en r[8] (Hora_Real), extraemos solo YYYY-MM-DD
             fecha_vuelo_existente = r[8].split(' ')[0] if ' ' in r[8] else r[8]
             id_unico = f"{str(r[1]).strip()}_{fecha_vuelo_existente}_{str(r[2]).strip()}"
             firmas_existentes.add(id_unico)
@@ -67,9 +64,9 @@ def recolectar():
 
             if not (es_mad_origen or es_mad_destino): continue
             
-            # Filtros de altitud (Salidas 10k, Llegadas 5k)
+            # Filtros de altitud
             if es_mad_destino and v.altitude > 5000: continue
-            if es_mad_origen and v.altitude > 10000: continue
+            if es_mad_origen and v.altitude > 12000: continue
 
             try:
                 d = fr_api.get_flight_details(v)
@@ -78,33 +75,39 @@ def recolectar():
                 
                 if not (es_salida or es_llegada): continue
                 
-                apt_key = 'destination' if es_salida else 'origin'
+                # --- NUEVA LÓGICA DE VALIDACIÓN POR ESTADO ---
+                status_vuelo = d['status']['generic']['status']['text'].lower()
                 ts_key = 'departure' if es_salida else 'arrival'
                 ts_real = d['time']['real'].get(ts_key)
+
+                # Regla 1: Si es llegada, solo registramos si ya ha aterrizado (Landed/Arrived)
+                if es_llegada and status_vuelo not in ['landed', 'arrived']:
+                    continue
                 
-                # Solo procesar si hay timestamp REAL (el avión ya aterrizó o despegó)
+                # Regla 2: Si es salida, solo registramos si ya tiene un tiempo real (Take-off)
+                if es_salida and not ts_real:
+                    continue
+
                 if ts_real and (ahora_ts - ts_real) < 5400:
                     vuelo_id = str(d['identification']['number']['default'] or d['aircraft']['registration']).strip()
                     tipo_mov = "SALIDA" if es_salida else "LLEGADA"
                     dt_real = datetime.fromtimestamp(ts_real, ZONA_HORARIA)
                     fecha_vuelo_str = dt_real.strftime('%Y-%m-%d')
                     
-                    # --- COMPROBACIÓN DE FIRMA DE BLOQUE ---
                     firma_nueva = f"{vuelo_id}_{fecha_vuelo_str}_{tipo_mov}"
                     
                     if firma_nueva not in firmas_existentes:
+                        apt_key = 'destination' if es_salida else 'origin'
                         ciudad = d['airport'][apt_key]['position']['region']['city']
                         pais = d['airport'][apt_key]['position']['country']['name']
                         aerolinea = d['airline']['name'] if d['airline'] else "Privado"
                         terminal = d['airport']['origin' if es_salida else 'destination']['info']['terminal'] or "N/A"
-                        
                         diff_minutos = int((ts_real - d['time']['scheduled'][ts_key]) / 60)
                         categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
                         
                         nuevos_registros.append([
                             ahora.strftime('%Y-%m-%d %H:%M:%S'),
-                            vuelo_id,
-                            tipo_mov,
+                            vuelo_id, tipo_mov,
                             d['airport'][apt_key]['code']['iata'],
                             ciudad, pais, aerolinea, terminal,
                             dt_real.strftime('%Y-%m-%d %H:%M:%S'),
@@ -130,6 +133,7 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
