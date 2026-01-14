@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# --- IMPORTACIÓN DE LA LIBRERÍA LOCAL (MANTENIDA) ---
+# --- IMPORTACIÓN DE LA LIBRERÍA LOCAL ---
 from FlightRadar24 import FlightRadar24API
 
 # --- CONFIGURACIÓN ---
@@ -44,14 +44,18 @@ def recolectar():
     if not sheet:
         return JSONResponse({"error": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-    # --- MEJORA 1: CONSULTA LIMITADA PARA EVITAR DUPLICADOS Y ERROR 429 ---
-    # En lugar de leer toda la hoja, leemos solo las últimas 400 filas
-    # Esto reduce el tiempo de ejecución y el riesgo de bloqueo por cuota (429)
+    # --- LECTURA OPTIMIZADA ---
     total_filas = sheet.row_count
     inicio_lectura = max(1, total_filas - 400)
-    # Obtenemos los valores del rango final para generar el set de firmas
     data_reciente = sheet.get_values(f"A{inicio_lectura}:N{total_filas}")
-    firmas_existentes = {f"{r[1]}_{r[13]}" for r in data_reciente if len(r) > 13}
+    
+    # CORRECCIÓN DE BUG: Normalización a string y limpieza de espacios
+    # Usamos str().strip() para que la comparación sea idéntica aunque Google Sheets cambie el formato
+    firmas_existentes = {
+        f"{str(r[1]).strip()}_{str(r[13]).strip()}" 
+        for r in data_reciente 
+        if len(r) > 13 and str(r[1]).strip() != "Vuelo"
+    }
     
     try:
         aeropuerto = fr_api.get_airport(code = IATA_CODE)
@@ -63,24 +67,18 @@ def recolectar():
         ahora_ts = ahora.timestamp()
 
         for v in vuelos_radar:
-            # --- MEJORA 2: ALTITUD ASIMÉTRICA PARA NO PERDER SALIDAS ---
-            # Filtro preventivo basado en IATA para decidir el techo de altitud
+            # ALTITUD ASIMÉTRICA (Mantenida)
             es_mad_origen = v.origin_airport_iata == IATA_CODE
             es_mad_destino = v.destination_airport_iata == IATA_CODE
 
             if not (es_mad_origen or es_mad_destino):
                 continue
-
-            # Si es LLEGADA a MAD, mantenemos el filtro estricto de 5000 pies
             if es_mad_destino and v.altitude > 5000:
                 continue
-            
-            # Si es SALIDA de MAD, subimos a 10000 pies para cazar los despegues rápidos
             if es_mad_origen and v.altitude > 10000:
                 continue
 
             try:
-                # 3. LLAMADA PESADA: Solo para vuelos que pasaron el filtro asimétrico
                 d = fr_api.get_flight_details(v)
                 
                 es_salida = d['airport']['origin']['code']['iata'] == IATA_CODE
@@ -96,7 +94,8 @@ def recolectar():
                     vuelo_id = d['identification']['number']['default'] or d['aircraft']['registration']
                     categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
                     
-                    firma = f"{vuelo_id}_{ts_real}"
+                    # CORRECCIÓN DE BUG: Generación de firma normalizada
+                    firma = f"{str(vuelo_id).strip()}_{str(ts_real).strip()}"
                     
                     if firma not in firmas_existentes:
                         ciudad = d['airport'][apt_key]['position']['region']['city']
@@ -131,6 +130,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
