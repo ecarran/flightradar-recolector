@@ -75,7 +75,7 @@ def recolectar():
                 continue
             if es_mad_destino and v.altitude > 5000:
                 continue
-            if es_mad_origen and v.altitude > 10000:
+            if es_mad_origen and v.altitude > 12000:
                 continue
 
             try:
@@ -138,6 +138,7 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
