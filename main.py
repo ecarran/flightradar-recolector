@@ -18,6 +18,7 @@ from FlightRadar24 import FlightRadar24API
 fr_api = FlightRadar24API()
 
 def conectar_y_preparar_hoja():
+    # Protección: Reintento en la conexión inicial
     for intento in range(3):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -32,16 +33,16 @@ def conectar_y_preparar_hoja():
 
 @app.get("/")
 def home():
-    return {"status": "online", "msg": "Recolector Barajas V4 - Lógica de Estado Activa (Blindado + Fix)"}
+    return {"status": "online", "msg": "Recolector Barajas V4 - Lógica de Estado Activa (Versión Corregida)"}
 
 @app.get("/recolectar")
 def recolectar():
     try:
-        sheet = conectar_y_preparar_ho_ja()
+        sheet = conectar_y_preparar_hoja()
         if not sheet:
             return JSONResponse({"status": "error", "msg": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-        # 1. Lectura optimizada (últimas 1500 filas)
+        # Protección: Lectura optimizada de las últimas 1500 filas para evitar duplicados sin saturar la API
         try:
             total_filas = len(sheet.col_values(1))
             fila_inicio = max(1, total_filas - 1500)
@@ -51,7 +52,7 @@ def recolectar():
             print(f"⚠️ Error leyendo datos recientes: {e}")
             firmas_existentes = set()
 
-        # 2. Obtener datos de Radar
+        # Obtener vuelos
         try:
             flights = fr_api.get_flights(bounds=fr_api.get_bounds_by_point(40.48, -3.56, 15000))
         except Exception as e:
@@ -89,17 +90,17 @@ def recolectar():
                             pais = d['airport'][apt_key]['code']['iata'] if d['airport'][apt_key] else "N/A"
                             aerolinea = d['airline']['name'] if d['airline'] else "N/A"
                             
-                            # REVISIÓN MEJORA 2: Normalización Terminal
-                            term_raw = d['airport']['origin']['info']['terminal']
-                            terminal = str(term_raw) if term_raw else "N/A"
+                            # MEJORA 2: Si no empieza por T, añade la T
+                            t_raw = d['airport']['origin']['info']['terminal']
+                            terminal = str(t_raw) if t_raw else "N/A"
                             if terminal != "N/A" and not terminal.startswith("T"):
                                 terminal = f"T{terminal}"
                             
-                            # REVISIÓN MEJORA 1: Diferencia
+                            # MEJORA 1: Si la diferencia es disparatada (>24h), pon 0
                             ts_sched = d['time']['scheduled'][ts_key]
                             if ts_sched:
                                 diff_minutos = int((ts_real - ts_sched) / 60)
-                                if abs(diff_minutos) > 1440: 
+                                if abs(diff_minutos) > 1440:
                                     diff_minutos = 0
                             else:
                                 diff_minutos = 0
@@ -117,17 +118,18 @@ def recolectar():
                                 diff_minutos, categoria, ts_real
                             ])
                             firmas_existentes.add(firma_nueva)
-            except Exception as e:
-                print(f"Saliendo de un vuelo por error individual: {e}")
+            except:
                 continue
 
         if nuevos_registros:
+            # Protección: Reintento exponencial en la escritura
             for intento in range(3):
                 try:
                     sheet.append_rows(nuevos_registros)
                     return {"status": "success", "añadidos": len(nuevos_registros)}
                 except Exception as e:
-                    time.sleep(2**(intento+1))
+                    print(f"⚠️ Error en escritura, reintento {intento+1}: {e}")
+                    time.sleep(2 ** (intento + 1))
             return JSONResponse({"status": "error", "msg": "Fallo tras reintentos de escritura"}, status_code=500)
         
         return {"status": "success", "añadidos": 0}
@@ -139,3 +141,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
