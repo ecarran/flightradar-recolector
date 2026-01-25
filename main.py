@@ -18,7 +18,6 @@ from FlightRadar24 import FlightRadar24API
 fr_api = FlightRadar24API()
 
 def conectar_y_preparar_hoja():
-    # Añadimos reintento simple en la conexión inicial
     for intento in range(3):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -33,26 +32,26 @@ def conectar_y_preparar_hoja():
 
 @app.get("/")
 def home():
-    return {"status": "online", "msg": "Recolector Barajas V4 - Lógica de Estado Activa (Blindado)"}
+    return {"status": "online", "msg": "Recolector Barajas V4 - Lógica de Estado Activa (Blindado + Fix)"}
 
 @app.get("/recolectar")
 def recolectar():
     try:
-        sheet = conectar_y_preparar_hoja()
+        sheet = conectar_y_preparar_ho_ja()
         if not sheet:
             return JSONResponse({"status": "error", "msg": "No se pudo conectar a Google Sheets"}, status_code=500)
 
-        # MEDIDA DE PROTECCIÓN 1: Lectura optimizada
+        # 1. Lectura optimizada (últimas 1500 filas)
         try:
             total_filas = len(sheet.col_values(1))
             fila_inicio = max(1, total_filas - 1500)
             data_reciente = sheet.get(f"A{fila_inicio}:N{total_filas+1}")
             firmas_existentes = {fila[1] for fila in data_reciente if len(fila) > 1}
         except Exception as e:
-            print(f"⚠️ Error leyendo datos recientes, usando set vacío: {e}")
+            print(f"⚠️ Error leyendo datos recientes: {e}")
             firmas_existentes = set()
 
-        # OBTENER DATOS DE RADAR
+        # 2. Obtener datos de Radar
         try:
             flights = fr_api.get_flights(bounds=fr_api.get_bounds_by_point(40.48, -3.56, 15000))
         except Exception as e:
@@ -90,14 +89,19 @@ def recolectar():
                             pais = d['airport'][apt_key]['code']['iata'] if d['airport'][apt_key] else "N/A"
                             aerolinea = d['airline']['name'] if d['airline'] else "N/A"
                             
-                            # MEJORA 2: Normalización de Terminal
-                            terminal = d['airport']['origin']['info']['terminal'] or "N/A"
+                            # REVISIÓN MEJORA 2: Normalización Terminal
+                            term_raw = d['airport']['origin']['info']['terminal']
+                            terminal = str(term_raw) if term_raw else "N/A"
                             if terminal != "N/A" and not terminal.startswith("T"):
                                 terminal = f"T{terminal}"
                             
-                            # MEJORA 1: Filtro de retraso disparatado
-                            diff_minutos = int((ts_real - d['time']['scheduled'][ts_key]) / 60)
-                            if abs(diff_minutos) > 1440: # Umbral de 24 horas
+                            # REVISIÓN MEJORA 1: Diferencia
+                            ts_sched = d['time']['scheduled'][ts_key]
+                            if ts_sched:
+                                diff_minutos = int((ts_real - ts_sched) / 60)
+                                if abs(diff_minutos) > 1440: 
+                                    diff_minutos = 0
+                            else:
                                 diff_minutos = 0
                                 
                             categoria = "COMERCIAL" if d['identification']['number']['default'] else "PRIVADO/CHARTER"
@@ -113,21 +117,18 @@ def recolectar():
                                 diff_minutos, categoria, ts_real
                             ])
                             firmas_existentes.add(firma_nueva)
-            except:
+            except Exception as e:
+                print(f"Saliendo de un vuelo por error individual: {e}")
                 continue
 
         if nuevos_registros:
-            # MEDIDA DE PROTECCIÓN 2: Reintento exponencial en escritura
             for intento in range(3):
                 try:
                     sheet.append_rows(nuevos_registros)
                     return {"status": "success", "añadidos": len(nuevos_registros)}
                 except Exception as e:
-                    if intento < 2:
-                        print(f"⚠️ Error escribiendo, reintentando en {2**(intento+1)}s...")
-                        time.sleep(2**(intento+1))
-                    else:
-                        return JSONResponse({"status": "error", "msg": f"Fallo tras reintentos: {e}"}, status_code=500)
+                    time.sleep(2**(intento+1))
+            return JSONResponse({"status": "error", "msg": "Fallo tras reintentos de escritura"}, status_code=500)
         
         return {"status": "success", "añadidos": 0}
 
@@ -138,18 +139,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
