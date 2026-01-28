@@ -72,7 +72,7 @@ def recolectar():
                 continue
 
             # Si es LLEGADA a MAD, mantenemos el filtro estricto de 5000 pies
-            if es_mad_destino and v.altitude > 10000:
+            if es_mad_destino and v.altitude > 8000:
                 continue
             
             # Si es SALIDA de MAD, subimos a 10000 pies para cazar los despegues rápidos
@@ -119,7 +119,7 @@ def recolectar():
                             diff_minutos, categoria, ts_real
                         ])
                         firmas_existentes.add(firma)
-                        time.sleep(0.05)
+                        time.sleep(0.06)
             except:
                 continue
 
@@ -131,6 +131,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
