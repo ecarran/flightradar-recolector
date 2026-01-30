@@ -71,8 +71,8 @@ def recolectar():
             if not (es_mad_origen or es_mad_destino):
                 continue
 
-            # Si es LLEGADA a MAD, mantenemos el filtro estricto de 5000 pies
-            if es_mad_destino and v.altitude > 8000:
+            # Si es LLEGADA a MAD, mantenemos el filtro estricto de 6000 pies
+            if es_mad_destino and v.altitude > 6000:
                 continue
             
             # Si es SALIDA de MAD, subimos a 10000 pies para cazar los despegues rápidos
@@ -131,6 +131,7 @@ def recolectar():
 
     except Exception as e:
         return JSONResponse({"status": "error", "msg": str(e)}, status_code=500)
+
 
 
 
